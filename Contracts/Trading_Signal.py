@@ -1,97 +1,139 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-from genlayer import *
-import json
-from dataclasses import dataclass
 
-@allow_storage
-@dataclass
-class TradingSignalData:
-    pair: str
-    action: str
-    strength: u8
-    price: str
-    rsi: str
-    ema_trend: str
-    validation: str
-    reasons: str
+import json
+from genlayer import *
+
 
 class TradingSignal(gl.Contract):
-    last_signal: str
-    last_pair: str
-    last_action: str
-    last_strength: u8
-    total_signals: u32
+    last_signal:   str
+    last_pair:     str
+    last_action:   str
+    last_strength: str
+    total_signals: str
 
     def __init__(self) -> None:
-        self.last_signal = ""
-        self.last_pair = ""
-        self.last_action = "NEUTRAL"
-        self.last_strength = u8(0)
-        self.total_signals = u32(0)
+        self.last_signal   = ""
+        self.last_pair     = ""
+        self.last_action   = "NEUTRAL"
+        self.last_strength = "0"
+        self.total_signals = "0"
 
     @gl.public.write
-    def validate_signal(
+    def validate_and_store_signal(
         self,
-        pair: str,
-        action: str,
-        strength: u8,
-        price: str,
-        rsi: str,
+        pair:      str,
+        action:    str,
+        strength:  str,
+        price:     str,
+        rsi:       str,
+        macd:      str,
         ema_trend: str,
-        reasons: str,
+        reasons:   str,
+        tp1:       str,
+        tp2:       str,
+        sl:        str,
+        rr_ratio:  str,
+        timeframe: str,
     ) -> None:
-        input_prompt = f"""
-You are a professional crypto trading analyst.
-Evaluate this perpetual futures trading signal:
 
-Pair: {pair}
-Action: {action}
-Price: {price}
-RSI: {rsi}
-EMA Trend: {ema_trend}
-Signal Strength: {strength}/100
-Reasons: {reasons}
+        web_result = gl.get_webpage(
+            "https://api.hyperliquid.xyz/info",
+            mode="text",
+        )
 
-Is the {action} signal valid based on these indicators?
-Respond **ONLY** with valid JSON (no other text):
-{{
-    "validation": "VALID" or "INVALID",
-    "reason": "short explanation why"
-}}
-"""
+        verify_prompt = (
+            "You have access to this Hyperliquid market data:\n"
+            + web_result[:300]
+            + "\n\nThe trading bot reported:\n"
+            + "Pair: " + pair + "\n"
+            + "Price: " + price + "\n\n"
+            + "Does the live market data confirm this price is plausible "
+            + "for " + pair + "? Prices within 2 percent range are acceptable.\n"
+            + "Reply only one word: PRICE_OK or PRICE_INVALID"
+        )
 
-        criteria = """
-validation must be exactly "VALID" or "INVALID" (uppercase).
-VALID only if all indicators consistently support the action.
-INVALID if there is any contradiction.
-"""
+        price_check = gl.exec_prompt(verify_prompt).strip().upper()
+        if "PRICE_INVALID" in price_check:
+            price_valid = "PRICE_INVALID"
+        else:
+            price_valid = "PRICE_OK"
+
+        signal_prompt = (
+            "You are a professional crypto trading analyst.\n"
+            + "Evaluate this perpetual futures signal:\n\n"
+            + "Pair: " + pair + "\n"
+            + "Timeframe: " + timeframe + "\n"
+            + "Action: " + action + "\n"
+            + "Price: " + price + "\n"
+            + "RSI: " + rsi + "\n"
+            + "MACD: " + macd + "\n"
+            + "EMA Trend: " + ema_trend + "\n"
+            + "TP1: " + tp1 + "\n"
+            + "TP2: " + tp2 + "\n"
+            + "Stop Loss: " + sl + "\n"
+            + "R/R Ratio: " + rr_ratio + "\n"
+            + "Signal Strength: " + strength + "/100\n"
+            + "Reasons: " + reasons + "\n"
+            + "Price Verification: " + price_valid + "\n\n"
+            + "Is the " + action + " signal valid based on these indicators?\n"
+            + "Reply in JSON only, no markdown fences:\n"
+            + "{\"validation\": \"VALID or INVALID\", \"reason\": \"brief explanation\"}"
+        )
+
+        criteria = (
+            "validation must be VALID or INVALID. "
+            "VALID if technical indicators consistently support the action "
+            "and price verification passed. "
+            "INVALID if indicators contradict the action or price is unverified."
+        )
 
         final_result = gl.eq_principle_prompt_non_comparative(
-            lambda: gl.exec_prompt(input_prompt),
-            task=input_prompt,
+            lambda: gl.exec_prompt(signal_prompt),
+            task=signal_prompt,
             criteria=criteria,
-        ).replace("```json", "").replace("```", "").strip()
+        )
+        final_result = final_result.replace("```json", "")
+        final_result = final_result.replace("```", "")
+        final_result = final_result.strip()
 
         result_json = json.loads(final_result)
-        validation = result_json.get("validation", "INVALID").strip().upper()
-        validation = "VALID" if validation == "VALID" else "INVALID"
+        validation = result_json.get("validation", "INVALID").upper()
+        if "VALID" in validation and "INVALID" not in validation:
+            validation = "VALID"
+        else:
+            validation = "INVALID"
 
-        self.last_signal = json.dumps({
-            "pair": pair,
-            "action": action,
-            "strength": int(strength),
-            "price": price,
-            "rsi": rsi,
-            "ema_trend": ema_trend,
-            "validation": validation,
-            "reasons": reasons,
-            "ai_reason": result_json.get("reason", "")
-        })
+        signal_data = {
+            "pair":         pair,
+            "action":       action,
+            "strength":     strength,
+            "price":        price,
+            "rsi":          rsi,
+            "macd":         macd,
+            "ema_trend":    ema_trend,
+            "tp1":          tp1,
+            "tp2":          tp2,
+            "sl":           sl,
+            "rr_ratio":     rr_ratio,
+            "timeframe":    timeframe,
+            "validation":   validation,
+            "price_verify": price_valid,
+            "reasons":      reasons,
+        }
+        self.last_signal = json.dumps(signal_data)
 
         self.last_pair = pair
-        self.last_action = action if validation == "VALID" else "NEUTRAL"
-        self.last_strength = strength if validation == "VALID" else u8(0)
-        self.total_signals = self.total_signals + u32(1)
+        if validation == "VALID":
+            self.last_action = action
+        else:
+            self.last_action = "NEUTRAL"
+
+        if validation == "VALID":
+            self.last_strength = strength
+        else:
+            self.last_strength = "0"
+
+        self.total_signals = str(int(self.total_signals) + 1)
 
     @gl.public.view
     def get_last_signal(self) -> str:
@@ -99,9 +141,10 @@ INVALID if there is any contradiction.
 
     @gl.public.view
     def get_stats(self) -> str:
-        return json.dumps({
-            "pair": self.last_pair,
-            "action": self.last_action,
-            "strength": int(self.last_strength),
-            "total": int(self.total_signals),
-        })
+        stats = {
+            "pair":     self.last_pair,
+            "action":   self.last_action,
+            "strength": self.last_strength,
+            "total":    self.total_signals,
+        }
+        return json.dumps(stats)
