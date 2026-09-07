@@ -36,35 +36,43 @@ class TradingSignal(gl.Contract):
         timeframe: str,
     ) -> None:
 
-        web_result = gl.get_webpage(
-            "https://api.hyperliquid.xyz/info",
-            mode="text",
-        )
+        def get_answer() -> str:
+            web_result = gl.get_webpage(
+                "https://api.hyperliquid.xyz/info",
+                mode="text",
+            )
+            prompt = (
+                "You are a professional crypto trading analyst.\n"
+                + "You have access to this Hyperliquid market data:\n"
+                + web_result[:300]
+                + "\n\nEvaluate this perpetual futures signal:\n\n"
+                + "Pair: " + pair + "\n"
+                + "Timeframe: " + timeframe + "\n"
+                + "Action: " + action + "\n"
+                + "Reported Price: " + price + "\n"
+                + "RSI: " + rsi + "\n"
+                + "MACD: " + macd + "\n"
+                + "EMA Trend: " + ema_trend + "\n"
+                + "TP1: " + tp1 + "\n"
+                + "TP2: " + tp2 + "\n"
+                + "Stop Loss: " + sl + "\n"
+                + "R/R Ratio: " + rr_ratio + "\n"
+                + "Signal Strength: " + strength + "/100\n"
+                + "Reasons: " + reasons + "\n\n"
+                + "First check if the reported price is plausible given the "
+                + "market data above (within 2 percent is acceptable). "
+                + "Then check if the " + action + " signal is valid based on "
+                + "the technical indicators.\n\n"
+                + "Reply in JSON only, no markdown fences:\n"
+                + "{\"validation\": \"VALID or INVALID\", \"reason\": \"brief explanation\"}"
+            )
+            return gl.exec_prompt(prompt)
 
-        signal_prompt = (
-            "You are a professional crypto trading analyst.\n"
-            + "You have access to this Hyperliquid market data:\n"
-            + web_result[:300]
-            + "\n\nEvaluate this perpetual futures signal:\n\n"
-            + "Pair: " + pair + "\n"
-            + "Timeframe: " + timeframe + "\n"
-            + "Action: " + action + "\n"
-            + "Reported Price: " + price + "\n"
-            + "RSI: " + rsi + "\n"
-            + "MACD: " + macd + "\n"
-            + "EMA Trend: " + ema_trend + "\n"
-            + "TP1: " + tp1 + "\n"
-            + "TP2: " + tp2 + "\n"
-            + "Stop Loss: " + sl + "\n"
-            + "R/R Ratio: " + rr_ratio + "\n"
-            + "Signal Strength: " + strength + "/100\n"
-            + "Reasons: " + reasons + "\n\n"
-            + "First check if the reported price is plausible given the "
-            + "market data above (within 2 percent is acceptable). "
-            + "Then check if the " + action + " signal is valid based on "
-            + "the technical indicators.\n\n"
-            + "Reply in JSON only, no markdown fences:\n"
-            + "{\"validation\": \"VALID or INVALID\", \"reason\": \"brief explanation\"}"
+        task_description = (
+            "Evaluate a " + action + " perpetual futures trading signal "
+            + "for " + pair + " using live Hyperliquid market data and "
+            + "technical indicators (RSI, MACD, EMA trend, R/R ratio). "
+            + "Decide whether the signal is VALID or INVALID."
         )
 
         criteria = (
@@ -75,8 +83,8 @@ class TradingSignal(gl.Contract):
         )
 
         final_result = gl.eq_principle_prompt_non_comparative(
-            lambda: gl.exec_prompt(signal_prompt),
-            task=signal_prompt,
+            get_answer,
+            task=task_description,
             criteria=criteria,
         )
         final_result = final_result.replace("```json", "")
