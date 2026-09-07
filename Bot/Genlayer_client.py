@@ -5,6 +5,7 @@ import os
 from typing import Optional
 from colorama import Fore, Style
 
+
 class GenLayerClient:
     def __init__(self, rpc_url, contract_address, private_key):
         self.rpc_url          = rpc_url.rstrip("/")
@@ -33,6 +34,8 @@ class GenLayerClient:
 
     async def send_signal(self, signal):
         reasons_str = " | ".join(signal.reasons)
+
+        # Method name dan argumen sekarang match 100% dengan contract
         payload = {
             "jsonrpc": "2.0",
             "id": self._next_id(),
@@ -42,19 +45,19 @@ class GenLayerClient:
                 "to":   self.contract_address,
                 "data": self._encode(
                     "validate_and_store_signal",
-                    pair=signal.coin,
-                    action=signal.action,
-                    strength=signal.strength,
-                    price=signal.price,
-                    rsi=signal.rsi,
-                    macd=signal.macd,
-                    ema_trend=signal.ema_trend,
-                    reasons=reasons_str,
-                    tp1=signal.tp1,
-                    tp2=signal.tp2,
-                    sl=signal.sl_tight,
-                    rr_ratio=signal.rr_ratio,
-                    timeframe=signal.timeframe,
+                    pair      = signal.coin,
+                    action    = signal.action,
+                    strength  = signal.strength,
+                    price     = str(signal.price),
+                    rsi       = str(signal.rsi),
+                    macd      = str(signal.macd),
+                    ema_trend = signal.ema_trend,
+                    reasons   = reasons_str,
+                    tp1       = str(signal.tp1),
+                    tp2       = str(signal.tp2),
+                    sl        = str(signal.sl_tight),
+                    rr_ratio  = str(signal.rr_ratio),
+                    timeframe = signal.timeframe,
                 ),
                 "gas": "0x100000",
             }]
@@ -62,23 +65,28 @@ class GenLayerClient:
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.post(
-                    self.rpc_url, json=payload,
+                    self.rpc_url,
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as r:
                     result = await r.json()
                     tx = result.get("result")
                     if tx:
                         print(
-                            f"{Fore.CYAN}TX sent: {tx}{Style.RESET_ALL}"
+                            Fore.CYAN + "TX sent: " +
+                            str(tx) + Style.RESET_ALL
                         )
                         return {"tx_hash": tx}
                     print(
-                        f"{Fore.RED}TX failed: "
-                        f"{result.get('error')}{Style.RESET_ALL}"
+                        Fore.RED + "TX failed: " +
+                        str(result.get("error")) + Style.RESET_ALL
                     )
                     return None
         except Exception as e:
-            print(f"{Fore.RED}GenLayer error: {e}{Style.RESET_ALL}")
+            print(
+                Fore.RED + "GenLayer error: " +
+                str(e) + Style.RESET_ALL
+            )
             return None
 
     async def get_last_signal(self):
@@ -94,7 +102,8 @@ class GenLayerClient:
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.post(
-                    self.rpc_url, json=payload,
+                    self.rpc_url,
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=15)
                 ) as r:
                     result = await r.json()
@@ -105,12 +114,17 @@ class GenLayerClient:
                             return json.loads(decoded)
             return None
         except Exception as e:
-            print(f"{Fore.RED}GenLayer read error: {e}{Style.RESET_ALL}")
+            print(
+                Fore.RED + "GenLayer read error: " +
+                str(e) + Style.RESET_ALL
+            )
             return None
 
     async def wait_for_consensus(self, tx_hash, max_wait=120):
         print(
-            f"{Fore.YELLOW}Menunggu LLM validators...{Style.RESET_ALL}"
+            Fore.YELLOW +
+            "Menunggu LLM validators..." +
+            Style.RESET_ALL
         )
         waited = 0
         while waited < max_wait:
@@ -119,10 +133,10 @@ class GenLayerClient:
             result = await self.get_last_signal()
             if result:
                 print(
-                    f"{Fore.GREEN}Konsensus! "
-                    f"({waited}s){Style.RESET_ALL}"
+                    Fore.GREEN + "Konsensus! " +
+                    str(waited) + "s" + Style.RESET_ALL
                 )
                 return result
-            print(f"  Menunggu... ({waited}s)")
-        print(f"{Fore.RED}Timeout konsensus{Style.RESET_ALL}")
+            print("  Menunggu... " + str(waited) + "s")
+        print(Fore.RED + "Timeout konsensus" + Style.RESET_ALL)
         return None
