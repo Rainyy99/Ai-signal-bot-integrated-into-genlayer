@@ -5,6 +5,7 @@ import json
 
 
 class TradingSignal(gl.Contract):
+    signals:       TreeMap[str, str]
     last_signal:   str
     last_pair:     str
     last_action:   str
@@ -21,6 +22,7 @@ class TradingSignal(gl.Contract):
     @gl.public.write
     def validate_and_store_signal(
         self,
+        signal_id: str,
         pair:      str,
         action:    str,
         strength:  str,
@@ -99,6 +101,7 @@ class TradingSignal(gl.Contract):
             validation = "INVALID"
 
         signal_data = {
+            "signal_id":  signal_id,
             "pair":       pair,
             "action":     action,
             "strength":   strength,
@@ -114,9 +117,14 @@ class TradingSignal(gl.Contract):
             "validation": validation,
             "reasons":    reasons,
         }
-        self.last_signal = json.dumps(signal_data)
+        signal_json = json.dumps(signal_data)
 
-        self.last_pair = pair
+        # Bind this specific verdict to its own unique signal_id
+        self.signals[signal_id] = signal_json
+
+        # Keep the convenience "last signal" fields updated too
+        self.last_signal = signal_json
+        self.last_pair   = pair
         if validation == "VALID":
             self.last_action = action
         else:
@@ -128,6 +136,12 @@ class TradingSignal(gl.Contract):
             self.last_strength = "0"
 
         self.total_signals = str(int(self.total_signals) + 1)
+
+    @gl.public.view
+    def get_signal(self, signal_id: str) -> str:
+        if signal_id in self.signals:
+            return self.signals[signal_id]
+        return ""
 
     @gl.public.view
     def get_last_signal(self) -> str:
