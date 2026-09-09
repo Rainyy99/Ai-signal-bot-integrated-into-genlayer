@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import json
 import os
+import time
 from typing import Optional
 from colorama import Fore, Style
 
@@ -32,10 +33,13 @@ class GenLayerClient:
         except Exception:
             return None
 
+    def _make_signal_id(self, coin: str) -> str:
+        return coin + "_" + str(int(time.time() * 1000))
+
     async def send_signal(self, signal):
         reasons_str = " | ".join(signal.reasons)
+        signal_id   = self._make_signal_id(signal.coin)
 
-        # Method name dan argumen sekarang match 100% dengan contract
         payload = {
             "jsonrpc": "2.0",
             "id": self._next_id(),
@@ -45,9 +49,10 @@ class GenLayerClient:
                 "to":   self.contract_address,
                 "data": self._encode(
                     "validate_and_store_signal",
+                    signal_id = signal_id,
                     pair      = signal.coin,
                     action    = signal.action,
-                    strength  = signal.strength,
+                    strength  = str(signal.strength),
                     price     = str(signal.price),
                     rsi       = str(signal.rsi),
                     macd      = str(signal.macd),
@@ -74,19 +79,45 @@ class GenLayerClient:
                     if tx:
                         print(
                             Fore.CYAN + "TX sent: " +
-                            str(tx) + Style.RESET_ALL
+                            str(tx) + " | signal_id: " +
+                            signal_id + Style.RESET_ALL
                         )
-                        return {"tx_hash": tx}
+                        return {"tx_hash": tx, "signal_id": signal_id}
                     print(
                         Fore.RED + "TX failed: " +
                         str(result.get("error")) + Style.RESET_ALL
                     )
                     return None
         except Exception as e:
-            print(
-                Fore.RED + "GenLayer error: " +
-                str(e) + Style.RESET_ALL
-            )
+            print(Fore.RED + "GenLayer error: " + str(e) + Style.RESET_ALL)
+            return None
+
+    async def get_signal(self, signal_id: str):
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "eth_call",
+            "params": [{
+                "to":   self.contract_address,
+                "data": self._encode("get_signal", signal_id=signal_id),
+            }, "latest"]
+        }
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    self.rpc_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as r:
+                    result = await r.json()
+                    raw = result.get("result", "")
+                    if raw and raw != "0x":
+                        decoded = self._decode(raw)
+                        if decoded:
+                            return json.loads(decoded)
+            return None
+        except Exception as e:
+            print(Fore.RED + "GenLayer read error: " + str(e) + Style.RESET_ALL)
             return None
 
     async def get_last_signal(self):
@@ -114,23 +145,20 @@ class GenLayerClient:
                             return json.loads(decoded)
             return None
         except Exception as e:
-            print(
-                Fore.RED + "GenLayer read error: " +
-                str(e) + Style.RESET_ALL
-            )
+            print(Fore.RED + "GenLayer read error: " + str(e) + Style.RESET_ALL)
             return None
 
-    async def wait_for_consensus(self, tx_hash, max_wait=120):
+    async def wait_for_consensus(self, signal_id: str, max_wait=120):
         print(
             Fore.YELLOW +
-            "Menunggu LLM validators..." +
+            "Menunggu LLM validators untuk " + signal_id + "..." +
             Style.RESET_ALL
         )
         waited = 0
         while waited < max_wait:
             await asyncio.sleep(5)
             waited += 5
-            result = await self.get_last_signal()
+            result = await self.get_signal(signal_id)
             if result:
                 print(
                     Fore.GREEN + "Konsensus! " +
