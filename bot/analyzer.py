@@ -1,7 +1,5 @@
-import pandas as pd
-import numpy as np
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 @dataclass
@@ -29,132 +27,197 @@ class Signal:
     open_interest: Optional[float] = None
 
 
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
+def ewm_alpha(values, alpha):
+    result = []
+    prev = None
+    for v in values:
+        if prev is None:
+            prev = v
+        else:
+            prev = v * alpha + prev * (1 - alpha)
+        result.append(prev)
+    return result
 
 
-def rsi(series, period=14):
-    delta = series.diff()
-    gain  = delta.clip(lower=0)
-    loss  = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+def ema(values, period):
+    return ewm_alpha(values, 2.0 / (period + 1))
 
 
-def macd(series, fast=12, slow=26, signal=9):
-    ema_fast   = ema(series, fast)
-    ema_slow   = ema(series, slow)
-    macd_line  = ema_fast - ema_slow
-    signal_line= ema(macd_line, signal)
-    histogram  = macd_line - signal_line
-    return macd_line, signal_line, histogram
+def rsi(closes, period=14):
+    gains  = [0.0]
+    losses = [0.0]
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        gains.append(diff if diff > 0 else 0.0)
+        losses.append(-diff if diff < 0 else 0.0)
+    avg_gain = ewm_alpha(gains, 1.0 / period)
+    avg_loss = ewm_alpha(losses, 1.0 / period)
+    result = []
+    for g, l in zip(avg_gain, avg_loss):
+        if l == 0:
+            result.append(100.0 if g > 0 else 50.0)
+        else:
+            rs = g / l
+            result.append(100 - (100 / (1 + rs)))
+    return result
 
 
-def bbands(series, period=20, std=2):
-    mid   = series.rolling(period).mean()
-    sigma = series.rolling(period).std()
-    upper = mid + std * sigma
-    lower = mid - std * sigma
+def macd(closes, fast=12, slow=26, signal=9):
+    ema_fast    = ema(closes, fast)
+    ema_slow    = ema(closes, slow)
+    macd_line   = [a - b for a, b in zip(ema_fast, ema_slow)]
+    signal_line = ema(macd_line, signal)
+    hist        = [a - b for a, b in zip(macd_line, signal_line)]
+    return macd_line, signal_line, hist
+
+
+def rolling_mean_std(values, period):
+    means = [None] * len(values)
+    stds  = [None] * len(values)
+    for i in range(len(values)):
+        if i + 1 >= period:
+            window = values[i - period + 1:i + 1]
+            m = sum(window) / period
+            if period > 1:
+                var = sum((x - m) ** 2 for x in window) / (period - 1)
+            else:
+                var = 0.0
+            means[i] = m
+            stds[i]  = var ** 0.5
+    return means, stds
+
+
+def bbands(closes, period=20, std_mult=2):
+    means, stds = rolling_mean_std(closes, period)
+    upper, mid, lower = [], [], []
+    for m, s, c in zip(means, stds, closes):
+        if m is None:
+            upper.append(c * 1.02)
+            mid.append(c)
+            lower.append(c * 0.98)
+        else:
+            upper.append(m + std_mult * s)
+            mid.append(m)
+            lower.append(m - std_mult * s)
     return upper, mid, lower
 
 
-def atr(high, low, close, period=14):
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low  - close.shift()).abs(),
-    ], axis=1).max(axis=1)
-    return tr.ewm(alpha=1/period, adjust=False).mean()
+def atr(highs, lows, closes, period=14):
+    tr = []
+    for i in range(len(closes)):
+        if i == 0:
+            tr.append(highs[i] - lows[i])
+        else:
+            tr.append(max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            ))
+    return ewm_alpha(tr, 1.0 / period)
 
 
-def stochrsi(series, period=14, smooth_k=3, smooth_d=3):
-    r      = rsi(series, period)
-    r_min  = r.rolling(period).min()
-    r_max  = r.rolling(period).max()
-    k_raw  = (r - r_min) / (r_max - r_min).replace(0, np.nan) * 100
-    k      = k_raw.rolling(smooth_k).mean()
-    d      = k.rolling(smooth_d).mean()
-    return k, d
+def rolling_min_max(values, period):
+    mins = [None] * len(values)
+    maxs = [None] * len(values)
+    for i in range(len(values)):
+        if i + 1 >= period:
+            window = values[i - period + 1:i + 1]
+            mins[i] = min(window)
+            maxs[i] = max(window)
+    return mins, maxs
 
 
-def mfi(high, low, close, volume, period=14):
-    typical    = (high + low + close) / 3
-    raw_mf     = typical * volume
-    pos_mf     = raw_mf.where(typical > typical.shift(), 0)
-    neg_mf     = raw_mf.where(typical < typical.shift(), 0)
-    pos_sum    = pos_mf.rolling(period).sum()
-    neg_sum    = neg_mf.rolling(period).sum()
-    mf_ratio   = pos_sum / neg_sum.replace(0, np.nan)
-    return 100 - (100 / (1 + mf_ratio))
+def rolling_mean(values, period):
+    result = [None] * len(values)
+    for i in range(len(values)):
+        if i + 1 >= period:
+            window = values[i - period + 1:i + 1]
+            result[i] = sum(window) / period
+    return result
+
+
+def stochrsi(closes, period=14, smooth_k=3, smooth_d=3):
+    rsi_vals = rsi(closes, period)
+    r_min, r_max = rolling_min_max(rsi_vals, period)
+    k_raw = []
+    for i in range(len(rsi_vals)):
+        if r_min[i] is None or r_max[i] == r_min[i]:
+            k_raw.append(50.0)
+        else:
+            k_raw.append((rsi_vals[i] - r_min[i]) / (r_max[i] - r_min[i]) * 100)
+    k_smooth = rolling_mean(k_raw, smooth_k)
+    k_filled = [v if v is not None else 50.0 for v in k_smooth]
+    d_smooth = rolling_mean(k_filled, smooth_d)
+    d_filled = [v if v is not None else 50.0 for v in d_smooth]
+    return k_filled, d_filled
+
+
+def mfi(highs, lows, closes, volumes, period=14):
+    typical = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+    raw_mf  = [t * v for t, v in zip(typical, volumes)]
+    pos_mf  = [0.0]
+    neg_mf  = [0.0]
+    for i in range(1, len(typical)):
+        if typical[i] > typical[i - 1]:
+            pos_mf.append(raw_mf[i])
+            neg_mf.append(0.0)
+        elif typical[i] < typical[i - 1]:
+            pos_mf.append(0.0)
+            neg_mf.append(raw_mf[i])
+        else:
+            pos_mf.append(0.0)
+            neg_mf.append(0.0)
+
+    pos_sum = [None] * len(pos_mf)
+    neg_sum = [None] * len(neg_mf)
+    for i in range(len(pos_mf)):
+        if i + 1 >= period:
+            pos_sum[i] = sum(pos_mf[i - period + 1:i + 1])
+            neg_sum[i] = sum(neg_mf[i - period + 1:i + 1])
+
+    result = []
+    for p, n in zip(pos_sum, neg_sum):
+        if p is None:
+            result.append(50.0)
+        elif n == 0:
+            result.append(100.0 if p > 0 else 50.0)
+        else:
+            ratio = p / n
+            result.append(100 - (100 / (1 + ratio)))
+    return result
 
 
 class TechnicalAnalyzer:
-    def analyze(self, coin, df, timeframe):
-        if len(df) < 100:
+    def analyze(self, coin, candles, timeframe):
+        if len(candles) < 100:
             return None
-        df = df.copy()
 
-        close  = df["close"]
-        high   = df["high"]
-        low    = df["low"]
-        volume = df["volume"]
+        closes  = [c["close"]  for c in candles]
+        highs   = [c["high"]   for c in candles]
+        lows    = [c["low"]    for c in candles]
+        volumes = [c["volume"] for c in candles]
 
-        e9   = ema(close, 9)
-        e21  = ema(close, 21)
-        e50  = ema(close, 50)
-        e200 = ema(close, 200)
+        e9   = ema(closes, 9)
+        e21  = ema(closes, 21)
+        e50  = ema(closes, 50)
+        e200 = ema(closes, 200)
 
-        rsi_val               = rsi(close, 14)
-        macd_line, macd_sig, macd_hist = macd(close)
-        bb_upper, bb_mid, bb_lower     = bbands(close)
-        atr_val               = atr(high, low, close, 14)
-        stoch_k, stoch_d      = stochrsi(close)
-        mfi_val               = mfi(high, low, close, volume, 14)
+        rsi_vals   = rsi(closes, 14)
+        ml, ms, mh = macd(closes)
+        bbu, bbm, bbl = bbands(closes)
+        atr_vals   = atr(highs, lows, closes, 14)
+        sk, sd     = stochrsi(closes)
+        mfi_vals   = mfi(highs, lows, closes, volumes, 14)
 
-        last_idx = -1
-        prev_idx = -2
-
-        price    = float(close.iloc[last_idx])
-        atr_last = float(atr_val.iloc[last_idx])
-        if np.isnan(atr_last) or atr_last == 0:
-            atr_last = price * 0.01
-
-        e9_v    = float(e9.iloc[last_idx])
-        e21_v   = float(e21.iloc[last_idx])
-        e50_v   = float(e50.iloc[last_idx])
-        e200_v  = float(e200.iloc[last_idx])
-
-        rsi_v   = float(rsi_val.iloc[last_idx])
-        if np.isnan(rsi_v):
-            rsi_v = 50.0
-
-        ml_v    = float(macd_line.iloc[last_idx])
-        ms_v    = float(macd_sig.iloc[last_idx])
-        mh_v    = float(macd_hist.iloc[last_idx])
-        mh_p    = float(macd_hist.iloc[prev_idx])
-        if np.isnan(ml_v): ml_v = 0.0
-        if np.isnan(ms_v): ms_v = 0.0
-        if np.isnan(mh_v): mh_v = 0.0
-        if np.isnan(mh_p): mh_p = 0.0
-
-        bbu_v   = float(bb_upper.iloc[last_idx])
-        bbm_v   = float(bb_mid.iloc[last_idx])
-        bbl_v   = float(bb_lower.iloc[last_idx])
-        if np.isnan(bbu_v): bbu_v = price * 1.02
-        if np.isnan(bbl_v): bbl_v = price * 0.98
-        if np.isnan(bbm_v): bbm_v = price
-
-        sk_v    = float(stoch_k.iloc[last_idx])
-        sd_v    = float(stoch_d.iloc[last_idx])
-        if np.isnan(sk_v): sk_v = 50.0
-        if np.isnan(sd_v): sd_v = 50.0
-
-        mfi_v   = float(mfi_val.iloc[last_idx])
-        if np.isnan(mfi_v): mfi_v = 50.0
-
-        prev_close = float(close.iloc[prev_idx])
+        price      = closes[-1]
+        atr_last   = atr_vals[-1] if atr_vals[-1] else price * 0.01
+        e9_v, e21_v, e50_v, e200_v = e9[-1], e21[-1], e50[-1], e200[-1]
+        rsi_v      = rsi_vals[-1]
+        ml_v, ms_v, mh_v, mh_p = ml[-1], ms[-1], mh[-1], mh[-2]
+        bbu_v, bbm_v, bbl_v    = bbu[-1], bbm[-1], bbl[-1]
+        sk_v, sd_v = sk[-1], sd[-1]
+        mfi_v      = mfi_vals[-1]
+        prev_close = closes[-2]
 
         sb, sw, rb, rw = 0, 0, [], []
 
@@ -199,8 +262,7 @@ class TechnicalAnalyzer:
 
         bb_range = bbu_v - bbl_v
         if bb_range > 0:
-            bb_pct = (price - bbl_v) / bb_range * 100
-            bb_pos = str(round(bb_pct, 0)) + "%"
+            bb_pos = str(round((price - bbl_v) / bb_range * 100, 0)) + "%"
         else:
             bb_pos = "MID"
         if price < bbl_v:
@@ -215,14 +277,10 @@ class TechnicalAnalyzer:
 
         if sk_v < 20 and sk_v > sd_v:
             sb += 15
-            rb.append(
-                "StochRSI Oversold+Cross " + str(round(sk_v, 1))
-            )
+            rb.append("StochRSI Oversold+Cross " + str(round(sk_v, 1)))
         elif sk_v > 80 and sk_v < sd_v:
             sw += 15
-            rw.append(
-                "StochRSI Overbought+Cross " + str(round(sk_v, 1))
-            )
+            rw.append("StochRSI Overbought+Cross " + str(round(sk_v, 1)))
 
         if mfi_v > 60:
             sb += 10
@@ -232,23 +290,19 @@ class TechnicalAnalyzer:
             rw.append("MFI Bearish " + str(round(mfi_v, 1)))
 
         if sb >= sw:
-            action   = "LONG"
-            strength = min(sb, 100)
-            reasons  = rb
+            action, strength, reasons = "LONG", min(sb, 100), rb
             sl_tight = price - atr_last * 1.0
             sl_loose = price - atr_last * 2.0
-            tp1      = price + atr_last * 1.5
-            tp2      = price + atr_last * 3.0
-            tp3      = price + atr_last * 5.0
+            tp1 = price + atr_last * 1.5
+            tp2 = price + atr_last * 3.0
+            tp3 = price + atr_last * 5.0
         else:
-            action   = "SHORT"
-            strength = min(sw, 100)
-            reasons  = rw
+            action, strength, reasons = "SHORT", min(sw, 100), rw
             sl_tight = price + atr_last * 1.0
             sl_loose = price + atr_last * 2.0
-            tp1      = price - atr_last * 1.5
-            tp2      = price - atr_last * 3.0
-            tp3      = price - atr_last * 5.0
+            tp1 = price - atr_last * 1.5
+            tp2 = price - atr_last * 3.0
+            tp3 = price - atr_last * 5.0
 
         risk   = abs(price - sl_tight)
         reward = abs(tp1 - price)
@@ -270,23 +324,13 @@ class TechnicalAnalyzer:
             lev_rec, lev_max = 10, 20
 
         return Signal(
-            coin=coin,
-            action=action,
-            strength=strength,
-            price=round(price, 4),
-            timeframe=timeframe,
-            rsi=round(rsi_v, 2),
-            macd=round(ml_v, 6),
-            ema_trend=trend,
-            bb_position=bb_pos,
+            coin=coin, action=action, strength=strength,
+            price=round(price, 4), timeframe=timeframe,
+            rsi=round(rsi_v, 2), macd=round(ml_v, 6),
+            ema_trend=trend, bb_position=bb_pos,
             reasons=reasons[:5],
-            tp1=round(tp1, 4),
-            tp2=round(tp2, 4),
-            tp3=round(tp3, 4),
-            sl_tight=round(sl_tight, 4),
-            sl_loose=round(sl_loose, 4),
-            rr_ratio=rr,
-            atr=round(atr_last, 4),
-            leverage_rec=lev_rec,
-            leverage_max=lev_max,
-                   )
+            tp1=round(tp1, 4), tp2=round(tp2, 4), tp3=round(tp3, 4),
+            sl_tight=round(sl_tight, 4), sl_loose=round(sl_loose, 4),
+            rr_ratio=rr, atr=round(atr_last, 4),
+            leverage_rec=lev_rec, leverage_max=lev_max,
+        )
