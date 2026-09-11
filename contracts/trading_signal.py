@@ -4,6 +4,18 @@ from genlayer import *
 import json
 
 
+COINGECKO_IDS = {
+    "BTC":  "bitcoin",
+    "ETH":  "ethereum",
+    "SOL":  "solana",
+    "BNB":  "binancecoin",
+    "AVAX": "avalanche-2",
+    "ARB":  "arbitrum",
+    "OP":   "optimism",
+    "WIF":  "dogwifcoin",
+}
+
+
 class TradingSignal(gl.Contract):
     signals:       TreeMap[str, str]
     last_signal:   str
@@ -38,16 +50,83 @@ class TradingSignal(gl.Contract):
         timeframe: str,
     ) -> None:
 
+        # --- Deterministic guard: prevent reuse of an existing signal_id ---
+        assert signal_id not in self.signals, "signal_id already used"
+
+        # --- Deterministic field validation (before spending LLM calls) ---
+        field_errors = []
+        try:
+            price_f = float(price)
+            if price_f <= 0:
+                field_errors.append("price must be positive")
+        except ValueError:
+            field_errors.append("price is not a valid number")
+
+        try:
+            rsi_f = float(rsi)
+            if rsi_f < 0 or rsi_f > 100:
+                field_errors.append("rsi out of 0-100 range")
+        except ValueError:
+            field_errors.append("rsi is not a valid number")
+
+        try:
+            float(macd)
+        except ValueError:
+            field_errors.append("macd is not a valid number")
+
+        try:
+            rr_f = float(rr_ratio)
+            if rr_f < 0:
+                field_errors.append("rr_ratio cannot be negative")
+        except ValueError:
+            field_errors.append("rr_ratio is not a valid number")
+
+        if action != "LONG" and action != "SHORT":
+            field_errors.append("action must be LONG or SHORT")
+
+        if len(field_errors) > 0:
+            error_reason = "; ".join(field_errors)
+            signal_data = {
+                "signal_id":  signal_id,
+                "pair":       pair,
+                "action":     action,
+                "strength":   strength,
+                "price":      price,
+                "rsi":        rsi,
+                "macd":       macd,
+                "ema_trend":  ema_trend,
+                "tp1":        tp1,
+                "tp2":        tp2,
+                "sl":         sl,
+                "rr_ratio":   rr_ratio,
+                "timeframe":  timeframe,
+                "validation": "INVALID",
+                "reasons":    "Field validation failed: " + error_reason,
+            }
+            signal_json = json.dumps(signal_data)
+            self.signals[signal_id] = signal_json
+            self.last_signal   = signal_json
+            self.last_pair     = pair
+            self.last_action   = "NEUTRAL"
+            self.last_strength = "0"
+            self.total_signals = str(int(self.total_signals) + 1)
+            return
+
+        # --- Pair-specific live market data + LLM consensus ---
+        cg_id = COINGECKO_IDS.get(pair.upper(), "bitcoin")
+        market_url = (
+            "https://api.coingecko.com/api/v3/simple/price?ids="
+            + cg_id
+            + "&vs_currencies=usd&include_24hr_change=true"
+        )
+
         def get_answer() -> str:
-            web_result = gl.get_webpage(
-                "https://api.hyperliquid.xyz/info",
-                mode="text",
-            )
+            web_result = gl.get_webpage(market_url, mode="text")
             prompt = (
                 "You are a professional crypto trading analyst.\n"
-                + "You have access to this Hyperliquid market data:\n"
-                + web_result[:300]
-                + "\n\nEvaluate this perpetual futures signal:\n\n"
+                + "Live market data for " + pair + " (fetched fresh for this "
+                + "specific pair): " + web_result[:300] + "\n\n"
+                + "Evaluate this perpetual futures signal:\n\n"
                 + "Pair: " + pair + "\n"
                 + "Timeframe: " + timeframe + "\n"
                 + "Action: " + action + "\n"
@@ -62,7 +141,9 @@ class TradingSignal(gl.Contract):
                 + "Signal Strength: " + strength + "/100\n"
                 + "Reasons: " + reasons + "\n\n"
                 + "First check if the reported price is plausible given the "
-                + "market data above (within 2 percent is acceptable). "
+                + "live market data above for THIS specific pair (within 3 "
+                + "percent is acceptable, since the live feed may be a few "
+                + "minutes delayed relative to the signal timeframe). "
                 + "Then check if the " + action + " signal is valid based on "
                 + "the technical indicators.\n\n"
                 + "Reply in JSON only, no markdown fences:\n"
@@ -72,16 +153,18 @@ class TradingSignal(gl.Contract):
 
         task_description = (
             "Evaluate a " + action + " perpetual futures trading signal "
-            + "for " + pair + " using live Hyperliquid market data and "
-            + "technical indicators (RSI, MACD, EMA trend, R/R ratio). "
-            + "Decide whether the signal is VALID or INVALID."
+            + "for " + pair + " (timeframe " + timeframe + ") using live, "
+            + "pair-specific market data fetched fresh from CoinGecko for "
+            + cg_id + ", plus technical indicators (RSI, MACD, EMA trend, "
+            + "R/R ratio). Decide whether the signal is VALID or INVALID."
         )
 
         criteria = (
             "validation must be VALID or INVALID. "
-            "VALID if the price is plausible and technical indicators "
-            "consistently support the action. "
-            "INVALID if the price looks wrong or indicators contradict the action."
+            "VALID if the reported price is plausible against the live "
+            "pair-specific market data and technical indicators consistently "
+            "support the action. INVALID if the price looks wrong for this "
+            "specific pair or indicators contradict the action."
         )
 
         final_result = gl.eq_principle_prompt_non_comparative(
@@ -119,20 +202,14 @@ class TradingSignal(gl.Contract):
         }
         signal_json = json.dumps(signal_data)
 
-        # Bind this specific verdict to its own unique signal_id
         self.signals[signal_id] = signal_json
-
-        # Keep the convenience "last signal" fields updated too
         self.last_signal = signal_json
         self.last_pair   = pair
         if validation == "VALID":
-            self.last_action = action
-        else:
-            self.last_action = "NEUTRAL"
-
-        if validation == "VALID":
+            self.last_action   = action
             self.last_strength = strength
         else:
+            self.last_action   = "NEUTRAL"
             self.last_strength = "0"
 
         self.total_signals = str(int(self.total_signals) + 1)
