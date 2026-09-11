@@ -14,7 +14,9 @@ class GenLayerClient:
         self.contract_address = contract_address
 
         if private_key:
-            self.account = create_account(private_key)
+            clean_key = private_key[2:] if private_key.startswith("0x") else private_key
+            key_bytes = bytes.fromhex(clean_key)
+            self.account = create_account(key_bytes)
         else:
             self.account = create_account()
             print(
@@ -22,7 +24,7 @@ class GenLayerClient:
                 "PERINGATAN: Tidak ada WALLET_PRIVATE_KEY di .env — "
                 "akun baru dibuat otomatis:\n"
                 "  Address    : " + self.account.address + "\n"
-                "  Private Key: " + self.account.private_key.hex() + "\n"
+                "  Private Key: " + self.account.key.hex() + "\n"
                 "Simpan private key ini ke .env sebagai WALLET_PRIVATE_KEY "
                 "dan fund akun ini via faucet sebelum lanjut." +
                 Style.RESET_ALL
