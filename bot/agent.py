@@ -30,10 +30,6 @@ class TradingAgent:
         if self.use_genlayer and self.contract_address:
             from .genlayer_client import GenLayerClient
             self.genlayer = GenLayerClient(
-                rpc_url=config.get(
-                    "genlayer_rpc_url",
-                    "https://rpc.asimov.genlayer.com"
-                ),
                 contract_address=self.contract_address,
                 private_key=config.get("wallet_private_key", ""),
             )
@@ -91,14 +87,19 @@ class TradingAgent:
             return
         print(" SINYAL!")
         self._sent += 1
+
         if self.use_genlayer and self.genlayer:
             if self.bot:
                 await self.bot.send_pending_signal(signal)
+
             tx = await self.genlayer.send_signal(signal)
             if tx:
-                # Fix 3: poll by unique signal_id, not the shared last signal
+                # Fix: wait_for_consensus now needs BOTH the tx_hash
+                # (to check the receipt/execution result) AND the
+                # signal_id (to read back that specific verdict).
                 consensus = await self.genlayer.wait_for_consensus(
-                    tx["signal_id"]
+                    tx["tx_hash"],
+                    tx["signal_id"],
                 )
                 if consensus and self.bot:
                     await self.bot.send_validated_signal(
