@@ -1,170 +1,145 @@
 import asyncio
-import aiohttp
 import json
-import os
 import time
 from typing import Optional
 from colorama import Fore, Style
 
+from genlayer_py import create_client, create_account
+from genlayer_py.chains import studionet
+from genlayer_py.types import TransactionStatus, ExecutionResult
+
 
 class GenLayerClient:
-    def __init__(self, rpc_url, contract_address, private_key):
-        self.rpc_url          = rpc_url.rstrip("/")
+    def __init__(self, contract_address: str, private_key: str = ""):
         self.contract_address = contract_address
-        self.private_key      = private_key
-        self._req_id          = 0
 
-    def _next_id(self):
-        self._req_id += 1
-        return self._req_id
+        if private_key:
+            self.account = create_account(private_key)
+        else:
+            self.account = create_account()
+            print(
+                Fore.YELLOW +
+                "PERINGATAN: Tidak ada WALLET_PRIVATE_KEY di .env — "
+                "akun baru dibuat otomatis:\n"
+                "  Address    : " + self.account.address + "\n"
+                "  Private Key: " + self.account.private_key.hex() + "\n"
+                "Simpan private key ini ke .env sebagai WALLET_PRIVATE_KEY "
+                "dan fund akun ini via faucet sebelum lanjut." +
+                Style.RESET_ALL
+            )
 
-    def _encode(self, method, **kwargs):
-        data = json.dumps({"method": method, "args": kwargs})
-        return "0x" + data.encode().hex()
-
-    def _decode(self, hex_data):
-        try:
-            clean = hex_data.replace("0x", "")
-            if len(clean) < 128:
-                return None
-            return bytes.fromhex(
-                clean[128:]
-            ).rstrip(b"\x00").decode("utf-8")
-        except Exception:
-            return None
+        self.client = create_client(chain=studionet, account=self.account)
+        print(
+            Fore.GREEN +
+            "GenLayer client (genlayer-py SDK) siap. Account: " +
+            self.account.address + Style.RESET_ALL
+        )
 
     def _make_signal_id(self, coin: str) -> str:
         return coin + "_" + str(int(time.time() * 1000))
 
     async def send_signal(self, signal):
+        loop = asyncio.get_event_loop()
+        signal_id = self._make_signal_id(signal.coin)
         reasons_str = " | ".join(signal.reasons)
-        signal_id   = self._make_signal_id(signal.coin)
 
-        payload = {
-            "jsonrpc": "2.0",
-            "id": self._next_id(),
-            "method": "eth_sendTransaction",
-            "params": [{
-                "from": os.getenv("WALLET_ADDRESS", ""),
-                "to":   self.contract_address,
-                "data": self._encode(
-                    "validate_and_store_signal",
-                    signal_id = signal_id,
-                    pair      = signal.coin,
-                    action    = signal.action,
-                    strength  = str(signal.strength),
-                    price     = str(signal.price),
-                    rsi       = str(signal.rsi),
-                    macd      = str(signal.macd),
-                    ema_trend = signal.ema_trend,
-                    reasons   = reasons_str,
-                    tp1       = str(signal.tp1),
-                    tp2       = str(signal.tp2),
-                    sl        = str(signal.sl_tight),
-                    rr_ratio  = str(signal.rr_ratio),
-                    timeframe = signal.timeframe,
-                ),
-                "gas": "0x100000",
-            }]
-        }
+        args = [
+            signal_id,
+            signal.coin,
+            signal.action,
+            str(signal.strength),
+            str(signal.price),
+            str(signal.rsi),
+            str(signal.macd),
+            signal.ema_trend,
+            reasons_str,
+            str(signal.tp1),
+            str(signal.tp2),
+            str(signal.sl_tight),
+            str(signal.rr_ratio),
+            signal.timeframe,
+        ]
+
+        def _write():
+            return self.client.write_contract(
+                account=self.account,
+                address=self.contract_address,
+                function_name="validate_and_store_signal",
+                args=args,
+                value=0,
+            )
+
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    self.rpc_url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as r:
-                    result = await r.json()
-                    tx = result.get("result")
-                    if tx:
-                        print(
-                            Fore.CYAN + "TX sent: " +
-                            str(tx) + " | signal_id: " +
-                            signal_id + Style.RESET_ALL
-                        )
-                        return {"tx_hash": tx, "signal_id": signal_id}
-                    print(
-                        Fore.RED + "TX failed: " +
-                        str(result.get("error")) + Style.RESET_ALL
-                    )
-                    return None
+            tx_hash = await loop.run_in_executor(None, _write)
+            print(
+                Fore.CYAN + "TX sent: " + str(tx_hash) +
+                " | signal_id: " + signal_id + Style.RESET_ALL
+            )
+            return {"tx_hash": tx_hash, "signal_id": signal_id}
         except Exception as e:
-            print(Fore.RED + "GenLayer error: " + str(e) + Style.RESET_ALL)
+            print(Fore.RED + "GenLayer send error: " + str(e) + Style.RESET_ALL)
             return None
 
-    async def get_signal(self, signal_id: str):
-        payload = {
-            "jsonrpc": "2.0",
-            "id": self._next_id(),
-            "method": "eth_call",
-            "params": [{
-                "to":   self.contract_address,
-                "data": self._encode("get_signal", signal_id=signal_id),
-            }, "latest"]
-        }
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    self.rpc_url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as r:
-                    result = await r.json()
-                    raw = result.get("result", "")
-                    if raw and raw != "0x":
-                        decoded = self._decode(raw)
-                        if decoded:
-                            return json.loads(decoded)
-            return None
-        except Exception as e:
-            print(Fore.RED + "GenLayer read error: " + str(e) + Style.RESET_ALL)
-            return None
-
-    async def get_last_signal(self):
-        payload = {
-            "jsonrpc": "2.0",
-            "id": self._next_id(),
-            "method": "eth_call",
-            "params": [{
-                "to":   self.contract_address,
-                "data": self._encode("get_last_signal"),
-            }, "latest"]
-        }
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    self.rpc_url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as r:
-                    result = await r.json()
-                    raw = result.get("result", "")
-                    if raw and raw != "0x":
-                        decoded = self._decode(raw)
-                        if decoded:
-                            return json.loads(decoded)
-            return None
-        except Exception as e:
-            print(Fore.RED + "GenLayer read error: " + str(e) + Style.RESET_ALL)
-            return None
-
-    async def wait_for_consensus(self, signal_id: str, max_wait=120):
+    async def wait_for_consensus(self, tx_hash: str, signal_id: str, max_wait: int = 180):
+        loop = asyncio.get_event_loop()
         print(
-            Fore.YELLOW +
-            "Menunggu LLM validators untuk " + signal_id + "..." +
-            Style.RESET_ALL
+            Fore.YELLOW + "Menunggu finalisasi transaksi " +
+            str(tx_hash) + "..." + Style.RESET_ALL
         )
-        waited = 0
-        while waited < max_wait:
-            await asyncio.sleep(5)
-            waited += 5
-            result = await self.get_signal(signal_id)
-            if result:
-                print(
-                    Fore.GREEN + "Konsensus! " +
-                    str(waited) + "s" + Style.RESET_ALL
-                )
-                return result
-            print("  Menunggu... " + str(waited) + "s")
-        print(Fore.RED + "Timeout konsensus" + Style.RESET_ALL)
-        return None
+
+        def _wait_receipt():
+            return self.client.wait_for_transaction_receipt(
+                transaction_hash=tx_hash,
+                status=TransactionStatus.FINALIZED,
+            )
+
+        try:
+            receipt = await loop.run_in_executor(None, _wait_receipt)
+        except Exception as e:
+            print(Fore.RED + "Receipt error: " + str(e) + Style.RESET_ALL)
+            return None
+
+        result_name = receipt.get("tx_execution_result_name")
+        if result_name == ExecutionResult.FINISHED_WITH_ERROR.value:
+            print(Fore.RED + "Eksekusi contract GAGAL untuk TX ini." + Style.RESET_ALL)
+            return None
+        if result_name != ExecutionResult.FINISHED_WITH_RETURN.value:
+            print(Fore.RED + "Eksekusi belum selesai/voted: " + str(result_name) + Style.RESET_ALL)
+            return None
+
+        def _read():
+            return self.client.read_contract(
+                address=self.contract_address,
+                function_name="get_signal",
+                args=[signal_id],
+            )
+
+        try:
+            raw = await loop.run_in_executor(None, _read)
+        except Exception as e:
+            print(Fore.RED + "Read error: " + str(e) + Style.RESET_ALL)
+            return None
+
+        if not raw:
+            print(Fore.RED + "signal_id tidak ditemukan di contract." + Style.RESET_ALL)
+            return None
+
+        print(Fore.GREEN + "Konsensus selesai & terverifikasi on-chain!" + Style.RESET_ALL)
+        return json.loads(raw)
+
+    async def get_stats(self):
+        loop = asyncio.get_event_loop()
+
+        def _read():
+            return self.client.read_contract(
+                address=self.contract_address,
+                function_name="get_stats",
+                args=[],
+            )
+
+        try:
+            raw = await loop.run_in_executor(None, _read)
+            return json.loads(raw) if raw else None
+        except Exception as e:
+            print(Fore.RED + "Read stats error: " + str(e) + Style.RESET_ALL)
+            return None
