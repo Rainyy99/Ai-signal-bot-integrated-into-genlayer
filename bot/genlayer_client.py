@@ -129,6 +129,23 @@ class GenLayerClient:
         print(Fore.GREEN + "Konsensus selesai & terverifikasi on-chain!" + Style.RESET_ALL)
         return json.loads(raw)
 
+    async def get_last_signal(self):
+        loop = asyncio.get_event_loop()
+
+        def _read():
+            return self.client.read_contract(
+                address=self.contract_address,
+                function_name="get_last_signal",
+                args=[],
+            )
+
+        try:
+            raw = await loop.run_in_executor(None, _read)
+            return json.loads(raw) if raw else None
+        except Exception as e:
+            print(Fore.RED + "Read last_signal error: " + str(e) + Style.RESET_ALL)
+            return None
+
     async def get_stats(self):
         loop = asyncio.get_event_loop()
 
