@@ -114,12 +114,13 @@ class GenLayerClient:
                 address=self.contract_address,
                 function_name="get_signal",
                 args=[signal_id],
+                state_status="accepted",
             )
 
         try:
             raw = await loop.run_in_executor(None, _read)
         except Exception as e:
-            print(Fore.RED + "Read error: " + str(e) + Style.RESET_ALL)
+            print(Fore.RED + "Read error: " + repr(e) + Style.RESET_ALL)
             return None
 
         if not raw:
@@ -137,13 +138,14 @@ class GenLayerClient:
                 address=self.contract_address,
                 function_name="get_last_signal",
                 args=[],
+                state_status="accepted",
             )
 
         try:
             raw = await loop.run_in_executor(None, _read)
             return json.loads(raw) if raw else None
         except Exception as e:
-            print(Fore.RED + "Read last_signal error: " + str(e) + Style.RESET_ALL)
+            print(Fore.RED + "Read last_signal error: " + repr(e) + Style.RESET_ALL)
             return None
 
     async def get_stats(self):
@@ -154,11 +156,12 @@ class GenLayerClient:
                 address=self.contract_address,
                 function_name="get_stats",
                 args=[],
+                state_status="accepted",
             )
 
         try:
             raw = await loop.run_in_executor(None, _read)
             return json.loads(raw) if raw else None
         except Exception as e:
-            print(Fore.RED + "Read stats error: " + str(e) + Style.RESET_ALL)
+            print(Fore.RED + "Read stats error: " + repr(e) + Style.RESET_ALL)
             return None
