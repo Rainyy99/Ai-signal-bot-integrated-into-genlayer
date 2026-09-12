@@ -112,7 +112,15 @@ class TradingSignal(gl.Contract):
             self.total_signals = str(int(self.total_signals) + 1)
             return
 
-        # --- Pair-specific live market data + LLM consensus ---
+        # --- Live market data + LLM consensus ---
+        # Note: this runtime uses the newer namespaced API
+        # (gl.nondet.web.render / gl.nondet.exec_prompt /
+        # gl.eq_principle.prompt_non_comparative). Hyperliquid's /info
+        # endpoint only accepts POST (confirmed via HTTP 405 in
+        # testing) and gl.nondet.web.render can only do a plain GET,
+        # so we use CoinGecko's simple/price endpoint instead, which
+        # is a genuine GET-able REST API and also gives us pair-specific
+        # data (only that one coin's price) rather than a full dump.
         cg_id = COINGECKO_IDS.get(pair.upper(), "bitcoin")
         market_url = (
             "https://api.coingecko.com/api/v3/simple/price?ids="
@@ -121,11 +129,12 @@ class TradingSignal(gl.Contract):
         )
 
         def get_answer() -> str:
-            web_result = gl.get_webpage(market_url, mode="text")
+            web_result = gl.nondet.web.render(market_url, mode="text")
             prompt = (
                 "You are a professional crypto trading analyst.\n"
-                + "Live market data for " + pair + " (fetched fresh for this "
-                + "specific pair): " + web_result[:300] + "\n\n"
+                + "Live market data fetched fresh for " + pair
+                + " specifically:\n"
+                + web_result[:300] + "\n\n"
                 + "Evaluate this perpetual futures signal:\n\n"
                 + "Pair: " + pair + "\n"
                 + "Timeframe: " + timeframe + "\n"
@@ -140,34 +149,34 @@ class TradingSignal(gl.Contract):
                 + "R/R Ratio: " + rr_ratio + "\n"
                 + "Signal Strength: " + strength + "/100\n"
                 + "Reasons: " + reasons + "\n\n"
-                + "First check if the reported price is plausible given the "
-                + "live market data above for THIS specific pair (within 3 "
-                + "percent is acceptable, since the live feed may be a few "
-                + "minutes delayed relative to the signal timeframe). "
-                + "Then check if the " + action + " signal is valid based on "
-                + "the technical indicators.\n\n"
+                + "First locate " + pair + " within the live snapshot "
+                + "above and check if the reported price is plausible "
+                + "for THAT specific asset (within 3 percent is "
+                + "acceptable). Then check if the " + action + " signal "
+                + "is valid based on the technical indicators.\n\n"
                 + "Reply in JSON only, no markdown fences:\n"
                 + "{\"validation\": \"VALID or INVALID\", \"reason\": \"brief explanation\"}"
             )
-            return gl.exec_prompt(prompt)
+            return gl.nondet.exec_prompt(prompt)
 
         task_description = (
             "Evaluate a " + action + " perpetual futures trading signal "
-            + "for " + pair + " (timeframe " + timeframe + ") using live, "
-            + "pair-specific market data fetched fresh from CoinGecko for "
-            + cg_id + ", plus technical indicators (RSI, MACD, EMA trend, "
+            + "for " + pair + " (timeframe " + timeframe + "). Locate "
+            + pair + " specifically within a live multi-asset Hyperliquid "
+            + "market snapshot, then judge the signal using that asset's "
+            + "live data plus technical indicators (RSI, MACD, EMA trend, "
             + "R/R ratio). Decide whether the signal is VALID or INVALID."
         )
 
         criteria = (
             "validation must be VALID or INVALID. "
-            "VALID if the reported price is plausible against the live "
-            "pair-specific market data and technical indicators consistently "
-            "support the action. INVALID if the price looks wrong for this "
-            "specific pair or indicators contradict the action."
+            "VALID if the reported price is plausible for the specific "
+            "pair found in the live snapshot and technical indicators "
+            "consistently support the action. INVALID if the price looks "
+            "wrong for that specific pair or indicators contradict the action."
         )
 
-        final_result = gl.eq_principle_prompt_non_comparative(
+        final_result = gl.eq_principle.prompt_non_comparative(
             get_answer,
             task=task_description,
             criteria=criteria,
@@ -176,12 +185,20 @@ class TradingSignal(gl.Contract):
         final_result = final_result.replace("```", "")
         final_result = final_result.strip()
 
-        result_json = json.loads(final_result)
-        validation = result_json.get("validation", "INVALID").upper()
-        if "VALID" in validation and "INVALID" not in validation:
-            validation = "VALID"
-        else:
-            validation = "INVALID"
+        # Defensive parsing: if the LLM response isn't perfectly
+        # formatted JSON (more likely with a longer prompt), don't let
+        # an uncaught JSONDecodeError crash the whole transaction.
+        # Fall back to a simple keyword scan of the raw text instead.
+        validation = "INVALID"
+        try:
+            result_json = json.loads(final_result)
+            raw_validation = result_json.get("validation", "INVALID").upper()
+            if "VALID" in raw_validation and "INVALID" not in raw_validation:
+                validation = "VALID"
+        except Exception:
+            upper_text = final_result.upper()
+            if "VALID" in upper_text and "INVALID" not in upper_text:
+                validation = "VALID"
 
         signal_data = {
             "signal_id":  signal_id,
