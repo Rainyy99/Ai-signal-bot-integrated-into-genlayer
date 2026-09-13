@@ -114,7 +114,6 @@ class GenLayerClient:
                 address=self.contract_address,
                 function_name="get_signal",
                 args=[signal_id],
-                state_status="accepted",
             )
 
         try:
@@ -138,7 +137,6 @@ class GenLayerClient:
                 address=self.contract_address,
                 function_name="get_last_signal",
                 args=[],
-                state_status="accepted",
             )
 
         try:
@@ -156,7 +154,6 @@ class GenLayerClient:
                 address=self.contract_address,
                 function_name="get_stats",
                 args=[],
-                state_status="accepted",
             )
 
         try:
