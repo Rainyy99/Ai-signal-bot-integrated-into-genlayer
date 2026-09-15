@@ -10,7 +10,7 @@ from genlayer_py.types import TransactionStatus, ExecutionResult
 
 
 class GenLayerClient:
-    def __init__(self, contract_address: str, private_key: str = ""):
+    def __init__(self, contract_address: str, private_key: str = "", rpc_url: Optional[str] = None):
         self.contract_address = contract_address
 
         if private_key:
@@ -21,7 +21,7 @@ class GenLayerClient:
             self.account = create_account()
             print(
                 Fore.YELLOW +
-                "PERINGATAN: Tidak ada WALLET_PRIVATE_KEY di .env — "
+                "PERINGATAN: Tidak ada WALLET_PRIVATE_KEY di .env -- "
                 "akun baru dibuat otomatis:\n"
                 "  Address    : " + self.account.address + "\n"
                 "  Private Key: " + self.account.key.hex() + "\n"
@@ -30,11 +30,13 @@ class GenLayerClient:
                 Style.RESET_ALL
             )
 
-        self.client = create_client(chain=studionet, account=self.account)
+        self.client = create_client(chain=studionet, account=self.account, endpoint=rpc_url or None)
         print(
             Fore.GREEN +
             "GenLayer client (genlayer-py SDK) siap. Account: " +
-            self.account.address + Style.RESET_ALL
+            self.account.address +
+            (" | RPC custom: " + rpc_url if rpc_url else "") +
+            Style.RESET_ALL
         )
 
     def _make_signal_id(self, coin: str) -> str:
@@ -46,20 +48,10 @@ class GenLayerClient:
         reasons_str = " | ".join(signal.reasons)
 
         args = [
-            signal_id,
-            signal.coin,
-            signal.action,
-            str(signal.strength),
-            str(signal.price),
-            str(signal.rsi),
-            str(signal.macd),
-            signal.ema_trend,
-            reasons_str,
-            str(signal.tp1),
-            str(signal.tp2),
-            str(signal.sl_tight),
-            str(signal.rr_ratio),
-            signal.timeframe,
+            signal_id, signal.coin, signal.action, str(signal.strength),
+            str(signal.price), str(signal.rsi), str(signal.macd),
+            signal.ema_trend, reasons_str, str(signal.tp1), str(signal.tp2),
+            str(signal.sl_tight), str(signal.rr_ratio), signal.timeframe,
         ]
 
         def _write():
@@ -89,10 +81,15 @@ class GenLayerClient:
             str(tx_hash) + "..." + Style.RESET_ALL
         )
 
+        interval_ms = 3000
+        retries = max(1, (max_wait * 1000) // interval_ms)
+
         def _wait_receipt():
             return self.client.wait_for_transaction_receipt(
                 transaction_hash=tx_hash,
                 status=TransactionStatus.FINALIZED,
+                interval=interval_ms,
+                retries=retries,
             )
 
         try:
@@ -101,12 +98,25 @@ class GenLayerClient:
             print(Fore.RED + "Receipt error: " + str(e) + Style.RESET_ALL)
             return None
 
-        result_name = receipt.get("tx_execution_result_name")
-        if result_name == ExecutionResult.FINISHED_WITH_ERROR.value:
-            print(Fore.RED + "Eksekusi contract GAGAL untuk TX ini." + Style.RESET_ALL)
+        leader_entries = [
+            r for r in receipt.get("consensus_data", {}).get("leader_receipt", []) or []
+            if r.get("mode") == "leader"
+        ]
+
+        if not leader_entries:
+            print(Fore.RED + "Tidak ada leader_receipt di dalam consensus_data." + Style.RESET_ALL)
             return None
-        if result_name != ExecutionResult.FINISHED_WITH_RETURN.value:
-            print(Fore.RED + "Eksekusi belum selesai/voted: " + str(result_name) + Style.RESET_ALL)
+
+        leader_result = leader_entries[0]
+        execution_result = leader_result.get("execution_result")
+
+        if execution_result != "SUCCESS":
+            genvm_result = leader_result.get("genvm_result", {})
+            stderr = genvm_result.get("stderr", "")
+            print(Fore.RED + "Eksekusi contract GAGAL (" + str(execution_result) + ")." + Style.RESET_ALL)
+            if stderr:
+                last_line = stderr.strip().splitlines()[-1] if stderr.strip() else ""
+                print(Fore.RED + "  " + last_line + Style.RESET_ALL)
             return None
 
         def _read():

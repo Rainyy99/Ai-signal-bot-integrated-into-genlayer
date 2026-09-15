@@ -32,6 +32,7 @@ class TradingAgent:
             self.genlayer = GenLayerClient(
                 contract_address=self.contract_address,
                 private_key=config.get("wallet_private_key", ""),
+                rpc_url=config.get("genlayer_rpc_url", "") or None,
             )
         self.bot        = None
         self._start     = datetime.now()
@@ -51,7 +52,7 @@ class TradingAgent:
         print("  Coins    : " + ", ".join(self.coins))
         print("  TF       : " + self.timeframe)
         print("  Interval : " + str(self.scan_interval) + "s")
-        print("  GenLayer : " + ("ON" if self.use_genlayer else "OFF"))
+        print("  GenLayer : " + ("ON" if (self.use_genlayer and self.genlayer) else "OFF"))
         print("=" * 48)
         while self._running:
             try:
